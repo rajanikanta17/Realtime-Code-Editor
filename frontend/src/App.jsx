@@ -1,21 +1,50 @@
-import { useEffect, useState } from "react";
-import "./App.css";
-import io from "socket.io-client";
+import { useEffect, useState, useRef } from "react";
 import Editor from "@monaco-editor/react";
+import io from 'socket.io-client';
+import "./App.css";
 
-const socket = io("https://realtime-code-editor-zwp3.onrender.com");
+// Initialize socket connection
+const socket = io(
+  process.env.NODE_ENV === 'production' 
+    ? window.location.origin 
+    : 'http://localhost:5000',
+  {
+    transports: ['websocket', 'polling']
+  }
+);
 
 const App = () => {
   const [joined, setJoined] = useState(false);
   const [roomId, setRoomId] = useState("");
   const [userName, setUserName] = useState("");
   const [language, setLanguage] = useState("javascript");
-  const [code, setCode] = useState("// start code here");
+  const [code, setCode] = useState("");
   const [copySuccess, setCopySuccess] = useState("");
   const [users, setUsers] = useState([]);
   const [typing, setTyping] = useState("");
+  const [connectionStatus, setConnectionStatus] = useState("connecting");
+  const [error, setError] = useState("");
+  
+  const typingTimeoutRef = useRef(null);
 
   useEffect(() => {
+    // Connection status handlers
+    socket.on("connect", () => {
+      setConnectionStatus("connected");
+      setError("");
+    });
+
+    socket.on("disconnect", () => {
+      setConnectionStatus("disconnected");
+    });
+
+    socket.on("connect_error", (error) => {
+      setConnectionStatus("error");
+      setError("Failed to connect to server");
+      console.error("Connection error:", error);
+    });
+
+    // Room event handlers
     socket.on("userJoined", (users) => {
       setUsers(users);
     });
@@ -25,19 +54,41 @@ const App = () => {
     });
 
     socket.on("userTyping", (user) => {
-      setTyping(`${user.slice(0, 8)}... is Typing`);
-      setTimeout(() => setTyping(""), 2000);
+      setTyping(`${user.slice(0, 8)}... is typing`);
+      
+      // Clear previous timeout
+      if (typingTimeoutRef.current) {
+        clearTimeout(typingTimeoutRef.current);
+      }
+      
+      // Set new timeout
+      typingTimeoutRef.current = setTimeout(() => {
+        setTyping("");
+      }, 2000);
     });
 
     socket.on("languageUpdate", (newLanguage) => {
       setLanguage(newLanguage);
     });
 
+    socket.on("error", (errorMessage) => {
+      setError(errorMessage);
+      setTimeout(() => setError(""), 5000);
+    });
+
     return () => {
+      socket.off("connect");
+      socket.off("disconnect");
+      socket.off("connect_error");
       socket.off("userJoined");
       socket.off("codeUpdate");
       socket.off("userTyping");
       socket.off("languageUpdate");
+      socket.off("error");
+      
+      if (typingTimeoutRef.current) {
+        clearTimeout(typingTimeoutRef.current);
+      }
     };
   }, []);
 
@@ -54,9 +105,17 @@ const App = () => {
   }, []);
 
   const joinRoom = () => {
-    if (roomId && userName) {
-      socket.emit("join", { roomId, userName });
+    if (roomId.trim() && userName.trim()) {
+      if (connectionStatus !== "connected") {
+        setError("Not connected to server. Please wait...");
+        return;
+      }
+      
+      socket.emit("join", { roomId: roomId.trim(), userName: userName.trim() });
       setJoined(true);
+      setError("");
+    } else {
+      setError("Please enter both Room ID and your name");
     }
   };
 
@@ -65,14 +124,22 @@ const App = () => {
     setJoined(false);
     setRoomId("");
     setUserName("");
-    setCode("// start code here");
+    setCode("");
     setLanguage("javascript");
+    setUsers([]);
+    setTyping("");
+    setError("");
   };
 
-  const copyRoomId = () => {
-    navigator.clipboard.writeText(roomId);
-    setCopySuccess("Copied!");
-    setTimeout(() => setCopySuccess(""), 2000);
+  const copyRoomId = async () => {
+    try {
+      await navigator.clipboard.writeText(roomId);
+      setCopySuccess("Copied!");
+      setTimeout(() => setCopySuccess(""), 2000);
+    } catch (err) {
+      setCopySuccess("Failed to copy");
+      setTimeout(() => setCopySuccess(""), 2000);
+    }
   };
 
   const handleCodeChange = (newCode) => {
@@ -92,6 +159,17 @@ const App = () => {
       <div className="join-container">
         <div className="join-form">
           <h1>Join Code Room</h1>
+          
+          {/* Connection status indicator */}
+          <div className="connection-status">
+            {connectionStatus === "connecting" && <span className="status-connecting">Connecting...</span>}
+            {connectionStatus === "connected" && <span className="status-connected">Connected</span>}
+            {connectionStatus === "disconnected" && <span className="status-disconnected">Disconnected</span>}
+            {connectionStatus === "error" && <span className="status-error">Connection Error</span>}
+          </div>
+          
+          {error && <div className="error-message">{error}</div>}
+          
           <input
             type="text"
             placeholder="Room Id"
